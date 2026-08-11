@@ -5,4 +5,4 @@ __pycache__/
 plot_demo_output/
 *.png
 *.pdf
-
+!examples/*.png
