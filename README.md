@@ -5,6 +5,24 @@
 > [!IMPORTANT]
 > 本 Skill 使用外部 LaTeX 渲染，不是 Matplotlib 内置 MathText。当前已在 macOS 上验证，Windows 支持尚未测试。
 
+## 样式来源
+
+本 Skill 的论文图样式标定与视觉标准参考自 Penn State University 杨翔教授领导的 [Flow Physics and Computational Research Laboratory (FPCRL)](https://sites.psu.edu/fpcrl/) 课题组的论文绘图风格。
+
+本项目是个人复现与整理，并非 FPCRL 或 Penn State University 的官方发布，也不代表该实验室或学校对本项目的背书。
+
+## 正确效果示例
+
+下面两张图由仓库当前版本的 `matlab_style_plots.py` 直接生成。
+
+### Line plot
+
+![MATLAB-style Python line plot](examples/line_demo.png)
+
+### Filled contour
+
+![MATLAB-style Python filled contour plot](examples/contour_demo.png)
+
 ## 安装
 
 将下面这句话直接发送给 Codex：
@@ -95,4 +113,3 @@ Windows 用户需要注意：
 - PDF 页面尺寸与字体嵌入检查
 
 关于 Codex Skill 的创建与安装，参见 [OpenAI Build skills 文档](https://learn.chatgpt.com/docs/build-skills)。
-
