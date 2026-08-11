@@ -1,0 +1,7 @@
+interface:
+  display_name: "MATLAB-Style Python Plots"
+  short_description: "Create calibrated LaTeX line and contour plots"
+  default_prompt: "Use $plot-matlab-style to create a publication-ready Python line or contour plot from my data."
+
+policy:
+  allow_implicit_invocation: true
