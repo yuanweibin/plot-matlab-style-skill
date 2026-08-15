@@ -13,7 +13,7 @@ Create line and filled-contour figures with the calibrated style while preservin
 2. Check that Python can import NumPy and Matplotlib and that `latex`, `dvipng`, and Ghostscript are available. Prefer the existing `pythonlineplot` Conda environment when present.
 3. Use `scripts/matlab_style_plots.py` instead of recreating style constants. Import its `line_plot` or `contour_plot` function from a small project-local driver script. Copy the module into the project only when portable source code is required.
 4. Preserve supplied data. Never substitute the bundled demo data into a real request.
-5. Use the calibrated geometry by default. For linear axes without explicit limits, jointly choose outward-rounded limits and 4--6 uniformly spaced ticks that include both endpoints. For logarithmic axes, use positive outward-rounded limits and clean 1--2--5 or decade ticks. Preserve explicit limits and ticks exactly. Adapt sizes only when the user requests another journal width, aspect ratio, layout, or colorbar orientation.
+5. Use the calibrated geometry by default. For linear axes without explicit limits, jointly choose outward-rounded limits and 4--6 uniformly spaced ticks that include both endpoints. For logarithmic axes, use positive outward-rounded limits and clean 1--2--5 or decade ticks. Preserve explicit limits and ticks exactly. On Windows, use 19 pt fonts for figures inserted at `0.4\linewidth`. Adapt sizes only when the user requests another journal width, aspect ratio, layout, or colorbar orientation.
 6. Save both PNG and vector PDF unless the user requests one format. Render the PDF at 300 dpi and visually inspect the latest result for clipping, seams, illegible labels, incorrect limits, or misplaced annotations.
 7. When matching a supplied MATLAB PDF, read `references/calibration.md`, render both PDFs at the same DPI, compare page/axes/colorbar geometry, and report any remaining renderer-only differences.
 8. Run `scripts/verify_pdf.py` on the final PDF when `pdfinfo` and `pdffonts` are available.
@@ -52,6 +52,7 @@ Use the analogous `contour_plot(x, y, z, ...)` function for filled contours. Rea
 ## Quality Rules
 
 - Keep 4-6 uniformly spaced labeled major ticks on linear axes. Include both displayed endpoints and make `(upper_limit - lower_limit) / tick_interval` an integer. Use outward-rounded limits unless the user supplies limits or domain conventions require otherwise. On logarithmic axes, require positive data and prefer clean 1-2-5 ticks or decade ticks.
+- Match font size to the final manuscript display. On Windows, use 19 pt fonts for figures inserted at `0.4\linewidth`. Use one font size within each figure unless the user explicitly asks for hierarchy.
 - Use dimensionless axis labels when the user supplies the normalization.
 - Keep LaTeX enabled; do not silently fall back to MathText when exact typography matters.
 - Use a symmetric diverging color scale for signed contour data unless the user specifies different limits.
