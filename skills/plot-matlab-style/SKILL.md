@@ -13,10 +13,11 @@ Create line and filled-contour figures with the calibrated style while preservin
 2. Check that Python can import NumPy and Matplotlib and that `latex`, `dvipng`, and Ghostscript are available. Prefer the existing `pythonlineplot` Conda environment when present.
 3. Use `scripts/matlab_style_plots.py` instead of recreating style constants. Import its `line_plot` or `contour_plot` function from a small project-local driver script. Copy the module into the project only when portable source code is required.
 4. Preserve supplied data. Never substitute the bundled demo data into a real request.
-5. Use the calibrated geometry by default. For linear axes without explicit limits, jointly choose outward-rounded limits and 4--6 uniformly spaced ticks that include both endpoints. For logarithmic axes, use positive outward-rounded limits and clean 1--2--5 or decade ticks. Preserve explicit limits and ticks exactly. Adapt sizes only when the user requests another journal width, aspect ratio, layout, or colorbar orientation.
-6. Save both PNG and vector PDF unless the user requests one format. Render the PDF at 300 dpi and visually inspect the latest result for clipping, seams, illegible labels, incorrect limits, or misplaced annotations.
-7. When matching a supplied MATLAB PDF, read `references/calibration.md`, render both PDFs at the same DPI, compare page/axes/colorbar geometry, and report any remaining renderer-only differences.
-8. Run `scripts/verify_pdf.py` on the final PDF when `pdfinfo` and `pdffonts` are available.
+5. Let the legend clear the data. `line_plot` grows an automatic y range one tick step at a time (a decade step on log axes) until the legend frame no longer covers any plotted point, re-deriving ticks each step so the 4--6 uniform label rule keeps holding. Pass `legend_clearance=False` to disable it. When `ylim` or `yticks` is explicit the range is left exactly as given and the collision is reported as a warning instead.
+6. Use the calibrated geometry by default. For linear axes without explicit limits, jointly choose outward-rounded limits and 4--6 uniformly spaced ticks that include both endpoints. For logarithmic axes, use positive outward-rounded limits and clean 1--2--5 or decade ticks. Preserve explicit limits and ticks exactly. Adapt sizes only when the user requests another journal width, aspect ratio, layout, or colorbar orientation.
+7. Save both PNG and vector PDF unless the user requests one format. Render the PDF at 300 dpi and visually inspect the latest result for seams, illegible labels, incorrect limits, or misplaced annotations. Clipping is handled automatically: the axes rectangle is the calibrated invariant, so when tick labels or the axis label would overrun the page the page grows by exactly the overflow instead of the axes shrinking. A figure whose labels fit is left at the nominal page size.
+8. When matching a supplied MATLAB PDF, read `references/calibration.md`, render both PDFs at the same DPI, compare page/axes/colorbar geometry, and report any remaining renderer-only differences.
+9. Run `scripts/verify_pdf.py` on the final PDF when `pdfinfo` and `pdffonts` are available. Pass the page size the figure actually produced: wide tick labels legitimately widen the page past the nominal 368 x 299 pt (line) or 370 x 308 pt (contour), while the axes rectangle stays 310 x 231 pt. Only a *changed axes rectangle* indicates a real geometry regression.
 
 ## Quick Use
 
@@ -51,12 +52,14 @@ Use the analogous `contour_plot(x, y, z, ...)` function for filled contours. Rea
 
 ## Quality Rules
 
+- Never let the legend cover a curve. `line_plot` widens an automatic y range until it does not; this is on by default (`legend_clearance=True`). Explicit `ylim`/`yticks` are still honoured exactly, so a collision there is only warned about -- drop the explicit range, or choose a different `legend_loc`, rather than leaving data hidden.
 - Keep 4-6 uniformly spaced labeled major ticks on linear axes. Include both displayed endpoints and make `(upper_limit - lower_limit) / tick_interval` an integer. Use outward-rounded limits unless the user supplies limits or domain conventions require otherwise. On logarithmic axes, require positive data and prefer clean 1-2-5 ticks or decade ticks.
 - Use dimensionless axis labels when the user supplies the normalization.
 - Keep LaTeX enabled; do not silently fall back to MathText when exact typography matters.
 - Use a symmetric diverging color scale for signed contour data unless the user specifies different limits.
 - Keep line colors distinguishable in color and grayscale; preserve explicitly requested colors.
-- Keep page size, axes position, colorbar position, and font embedding verifiable in the exported PDF.
+- Keep the axes rectangle, colorbar position, and font embedding verifiable in the exported PDF. The page size is a container, not a calibrated quantity: it may exceed the nominal size so that nothing is clipped.
+- Never let ink touch the page edge. The module renders through the Agg backend for this reason as well: an interactive backend snaps the canvas to whole pixels and silently moves the page off-spec.
 
 ## Resources
 

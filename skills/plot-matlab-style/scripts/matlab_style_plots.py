@@ -10,12 +10,22 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import warnings
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-import matplotlib.pyplot as plt
+import matplotlib
 import numpy as np
-from matplotlib.ticker import NullFormatter, StrMethodFormatter
+
+# These functions only ever write files, and an interactive backend silently
+# breaks the one thing this style guarantees.  A real window snaps the canvas to
+# whole pixels at the figure dpi, so macosx turns a requested 368 x 299 pt page
+# into 367.92 x 298.8 -- off-spec before a single curve is drawn.  Agg keeps the
+# requested size exactly, through set_size_inches and through both savefig calls.
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.ticker import NullFormatter, StrMethodFormatter  # noqa: E402
 
 
 MATLAB_DARK_GRAY = "#262626"
@@ -95,6 +105,82 @@ def _normalized_bounds(bounds_pt: Sequence[float], page_pt: Sequence[float]):
         width / page_width,
         height / page_height,
     )
+
+
+_FIT_SLACK_PT = 1.0
+"""Minimum clearance demanded between the outermost ink and the page edge.
+
+Without it a label whose extent lands exactly on the boundary is antialiased
+against nothing and reads as shaved.
+"""
+
+
+def _renderer(fig):
+    fig.canvas.draw()
+    try:
+        return fig.canvas.get_renderer()
+    except AttributeError:
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+        return FigureCanvasAgg(fig).get_renderer()
+
+
+def _expand_page_to_fit(fig, boxes_pt, page_pt, annotation_artist=None):
+    """Grow the page until nothing is clipped, keeping the axes rectangles fixed.
+
+    What this style calibrates is the axes rectangle and the typography, not the
+    page: the reference page leaves only 368 - (52 + 310) = 6 pt to the right of
+    the axes and 52 pt to its left.  That is enough for the calibration content,
+    whose tick labels are as short as "1" and "0.5".  Real data is not so
+    convenient -- "0.15" on the y axis needs about 26 pt plus the tick pad and
+    the rotated y-label, and a final x tick of "25" overhangs its centre by more
+    than 6 pt -- so the y-label and the last x tick label were being cut off.
+
+    Shrinking the axes to make room would silently break the calibrated
+    geometry, so instead the page grows by exactly the overflow and each axes
+    rectangle keeps its size in points, shifted to stay in the same place
+    relative to the data.  Everything is a pure translation at fixed font size,
+    so one measurement suffices; no iteration is needed.
+
+    A figure that already fits with ``_FIT_SLACK_PT`` to spare is left alone,
+    which keeps the reference demos byte-comparable.
+
+    Returns the page size in points actually used.
+    """
+    page_width, page_height = page_pt
+
+    # Restate the calibrated size before measuring against it, so the helper is
+    # correct whatever size the figure was actually created at.  The module
+    # forces Agg for this reason too; under an interactive backend a new canvas
+    # is snapped to whole pixels and the page silently drifts off-spec.
+    fig.set_size_inches(page_width / 72.0, page_height / 72.0)
+
+    bbox = fig.get_tightbbox(_renderer(fig))
+    if bbox is None:
+        return page_pt
+
+    left = max(0.0, _FIT_SLACK_PT - bbox.x0 * 72.0)
+    bottom = max(0.0, _FIT_SLACK_PT - bbox.y0 * 72.0)
+    right = max(0.0, bbox.x1 * 72.0 - (page_width - _FIT_SLACK_PT))
+    top = max(0.0, bbox.y1 * 72.0 - (page_height - _FIT_SLACK_PT))
+    if max(left, bottom, right, top) <= 0.0:
+        return page_pt
+
+    new_width = page_width + left + right
+    new_height = page_height + bottom + top
+    fig.set_size_inches(new_width / 72.0, new_height / 72.0)
+    for axes, bounds in boxes_pt:
+        box_left, box_bottom, box_width, box_height = bounds
+        axes.set_position(
+            _normalized_bounds(
+                (box_left + left, box_bottom + bottom, box_width, box_height),
+                (new_width, new_height),
+            )
+        )
+    if annotation_artist is not None:
+        # The annotation marks the page corner, so it follows the new corner.
+        annotation_artist.set_position((1 / new_width, 1 - 2.75 / new_height))
+    return (new_width, new_height)
 
 
 def _output_prefix(value: str | Path) -> Path:
@@ -360,6 +446,128 @@ def _scaled_axis(
     return _axis_scale(values, limits, ticks)
 
 
+_LEGEND_CLEARANCE_PT = 2.0
+"""Clearance demanded between the legend frame and the nearest plotted point."""
+
+_MAX_LEGEND_EXPANSIONS = 6
+"""Cap on how far the axis is grown before giving up and warning instead."""
+
+
+def _legend_collides(ax, legend, renderer) -> bool:
+    """True when any plotted point falls inside the legend frame.
+
+    Only points that are actually inside the axes count: a curve clipped away
+    at the edge of the view is not something the legend can hide.
+    """
+    if legend is None:
+        return False
+    pad = _LEGEND_CLEARANCE_PT * ax.figure.dpi / 72.0
+    frame = legend.get_window_extent(renderer).padded(pad)
+    axes_box = ax.get_window_extent(renderer)
+    for line in ax.lines:
+        data = line.get_xydata()
+        if data is None or len(data) == 0:
+            continue
+        points = line.get_transform().transform(data)
+        points = points[np.isfinite(points).all(axis=1)]
+        if points.size == 0:
+            continue
+        visible = (
+            (points[:, 0] >= axes_box.x0)
+            & (points[:, 0] <= axes_box.x1)
+            & (points[:, 1] >= axes_box.y0)
+            & (points[:, 1] <= axes_box.y1)
+        )
+        if not visible.any():
+            continue
+        inside = points[visible]
+        hit = (
+            (inside[:, 0] >= frame.x0)
+            & (inside[:, 0] <= frame.x1)
+            & (inside[:, 1] >= frame.y0)
+            & (inside[:, 1] <= frame.y1)
+        )
+        if hit.any():
+            return True
+    return False
+
+
+def _next_log_bound(value: float, *, upward: bool) -> float:
+    """Step a positive bound to the next clean 1--2--5 value."""
+    candidates = _log_candidates(value, value)
+    if upward:
+        larger = candidates[candidates > value * (1 + 1e-9)]
+        return float(larger[0]) if larger.size else value * 10.0
+    smaller = candidates[candidates < value * (1 - 1e-9)]
+    return float(smaller[-1]) if smaller.size else value / 10.0
+
+
+def _clear_legend(
+    ax,
+    legend,
+    values,
+    bounds,
+    ticks,
+    legend_loc,
+    axis_scale: str,
+    *,
+    expandable: bool,
+):
+    """Grow the y range until the legend stops covering data.
+
+    A legend drawn on top of the curves it labels destroys the figure's whole
+    purpose, and the fix that preserves the calibrated geometry is to make room
+    in the data range rather than to shrink or move the axes: the legend is
+    anchored to an axes corner, so widening the view pushes the curves away from
+    it while every calibrated dimension stays put.
+
+    The range grows one tick step at a time (a decade step on log axes) and the
+    ticks are re-derived after each step, so the 4--6 uniform label rule keeps
+    holding.  Explicit limits or ticks are never overridden -- the caller asked
+    for those exactly -- so an unavoidable collision is reported as a warning
+    instead.
+    """
+    renderer = _renderer(ax.figure)
+    if not _legend_collides(ax, legend, renderer):
+        return bounds, ticks
+    if not expandable:
+        warnings.warn(
+            "the legend overlaps plotted data, but the y axis uses explicit "
+            "limits or ticks and will not be changed; pass ylim=None and "
+            "yticks=None to let the range expand, or move the legend",
+            stacklevel=3,
+        )
+        return bounds, ticks
+
+    lower, upper = bounds
+    upward = "lower" not in str(legend_loc)
+    step = float(ticks[1] - ticks[0]) if len(ticks) > 1 else (upper - lower)
+    for _ in range(_MAX_LEGEND_EXPANSIONS):
+        if axis_scale == "log":
+            if upward:
+                upper = _next_log_bound(upper, upward=True)
+            else:
+                lower = _next_log_bound(lower, upward=False)
+            bounds, ticks = _log_axis_scale(values, (lower, upper), None)
+        else:
+            if upward:
+                upper += step
+            else:
+                lower -= step
+            ticks = _uniform_ticks(lower, upper)
+            bounds = (lower, upper)
+        ax.set_yticks(ticks)
+        ax.set_ylim(*bounds)
+        if not _legend_collides(ax, legend, _renderer(ax.figure)):
+            return bounds, ticks
+    warnings.warn(
+        "could not clear the legend from the plotted data within "
+        f"{_MAX_LEGEND_EXPANSIONS} axis expansions; consider another legend_loc",
+        stacklevel=3,
+    )
+    return bounds, ticks
+
+
 def _format_axes(
     ax,
     xticks,
@@ -392,6 +600,7 @@ def line_plot(
     colors: Sequence[str] | None = None,
     series_styles: Mapping[str, Mapping[str, object]] | None = None,
     legend_loc: str | None = "upper left",
+    legend_clearance: bool = True,
     annotation: str | None = "(a)",
     dpi: int = 300,
 ) -> dict[str, Path]:
@@ -405,6 +614,11 @@ def line_plot(
     Set ``legend_loc=None`` to omit the legend. Automatic linear limits use
     4--6 uniform ticks; automatic log limits use clean 1--2--5 ticks. Explicit
     limits or ticks always take precedence.
+
+    With ``legend_clearance`` (the default) an automatic y range is widened
+    until the legend no longer sits on top of any curve. It has no effect when
+    ``ylim`` or ``yticks`` is given, since those are honoured exactly; such a
+    collision is reported as a warning instead.
     """
 
     require_latex_tools()
@@ -475,6 +689,7 @@ def line_plot(
         ax.set_xlabel(xlabel, labelpad=5)
         ax.set_ylabel(ylabel, labelpad=5)
 
+        legend = None
         if legend_loc is not None:
             legend = ax.legend(
                 loc=legend_loc,
@@ -491,8 +706,21 @@ def line_plot(
             )
             legend.get_frame().set_linewidth(1)
 
+            if legend_clearance:
+                y_bounds, resolved_yticks = _clear_legend(
+                    ax,
+                    legend,
+                    all_y,
+                    y_bounds,
+                    resolved_yticks,
+                    legend_loc,
+                    y_axis_scale,
+                    expandable=ylim is None and yticks is None,
+                )
+
+        annotation_artist = None
         if annotation:
-            fig.text(
+            annotation_artist = fig.text(
                 1 / page_width,
                 1 - 2.75 / page_height,
                 annotation,
@@ -502,6 +730,9 @@ def line_plot(
                 fontsize=16.5,
             )
 
+        _expand_page_to_fit(
+            fig, ((ax, LINE_AXES_PT),), LINE_PAGE_PT, annotation_artist
+        )
         outputs = _save(fig, output_prefix, dpi)
         plt.close(fig)
     return outputs
@@ -617,8 +848,9 @@ def contour_plot(
             tick_label.set_fontsize(14.4)
         colorbar.ax.set_title(colorbar_title, fontsize=16, pad=10.5)
 
+        annotation_artist = None
         if annotation:
-            fig.text(
+            annotation_artist = fig.text(
                 7.25 / page_width,
                 1 - 6.25 / page_height,
                 annotation,
@@ -628,6 +860,12 @@ def contour_plot(
                 fontsize=16.5,
             )
 
+        _expand_page_to_fit(
+            fig,
+            ((ax, CONTOUR_AXES_PT), (cax, CONTOUR_CBAR_PT)),
+            CONTOUR_PAGE_PT,
+            annotation_artist,
+        )
         outputs = _save(fig, output_prefix, dpi)
         plt.close(fig)
     return outputs
