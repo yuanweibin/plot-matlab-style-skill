@@ -17,8 +17,8 @@ Use these measurements when the user requests the established line/contour style
 
 ## Line figure
 
-- PDF page: 368 x 299 pt
-- Axes rectangle: left 52, bottom 47.5, width 310, height 231 pt
+- PDF page: 368 x 299 pt **nominal**; see "Page expansion" below
+- Axes rectangle: left 52, bottom 47.5, width 310, height 231 pt (the calibrated invariant)
 - Legend: upper left, square frame, white background, 1 pt border
 - Figure annotation `(a)`: near the page upper-left corner
 - Calibrated reference content: `y=x`, `y=x^2`, both axes 0-1
@@ -33,6 +33,38 @@ Use these measurements when the user requests the established line/contour style
 - Colorbar outline/ticks: 0.5 pt; Times New Roman 14.4 pt tick labels
 - Colorbar title: LaTeX, 16 pt
 - Calibrated reference data: `Z = sin(2*pi*X) + cos(4*pi*Y)`
+
+## Page expansion
+
+The nominal page leaves 368 - (52 + 310) = 6 pt to the right of the axes and 52 pt to its left.
+That fits the calibration content, whose tick labels are as short as `1` and `0.5`, but not real
+data: `0.15` on the y axis needs roughly 26 pt plus the 6 pt tick pad plus the rotated y-label, and
+a final x tick of `25` overhangs its centre by more than 6 pt. Both used to be silently cut off.
+
+`_expand_page_to_fit` therefore measures the drawn figure and, when any artist would fall outside
+the page, grows the page by exactly the overflow while each axes rectangle keeps its size in points
+and shifts to stay in the same place relative to the data. Everything is a pure translation at fixed
+font size, so a single measurement suffices. A figure that already fits with 1 pt to spare is left
+untouched, which keeps both reference demos at exactly 368 x 299 and 370 x 308 pt.
+
+Consequence for checking: compare the *axes rectangle*, not the page, against this file. A page of
+374.5 x 299 pt with a 310 x 231 pt axes rectangle is correct; a page of exactly 368 x 299 pt with a
+shrunken axes rectangle is not.
+
+## Legend clearance
+
+The legend is anchored to an axes corner, so a dense upper-left or upper-right
+region puts it straight on top of the curves it labels. `line_plot` therefore
+checks, after drawing, whether any plotted point inside the axes falls within the
+legend frame plus 2 pt, and if so grows the y range one tick step at a time until
+it does not. Growing the range rather than shrinking or moving the axes is what
+keeps this calibration intact: every dimension in this file stays fixed, and only
+the data shrinks away from the legend.
+
+Ticks are re-derived after each step, so the 4--6 uniform label rule still holds
+afterwards; a range of 0--15 with a six-entry legend typically ends at 0--20.
+The search gives up after 6 expansions and warns. Explicit `ylim` or `yticks` are
+never overridden.
 
 ## Reference-matching procedure
 
