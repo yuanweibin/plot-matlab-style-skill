@@ -26,10 +26,13 @@ def command_output(command: list[str]) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("pdf", type=Path)
-    parser.add_argument("--width", type=float, required=True)
-    parser.add_argument("--height", type=float, required=True)
+    parser.add_argument("--width", type=float)
+    parser.add_argument("--height", type=float)
     parser.add_argument("--tolerance", type=float, default=0.05)
     args = parser.parse_args()
+
+    if (args.width is None) != (args.height is None):
+        parser.error("--width and --height must be supplied together")
 
     for command in ("pdfinfo", "pdffonts"):
         if shutil.which(command) is None:
@@ -42,7 +45,10 @@ def main() -> None:
     if match is None:
         raise SystemExit("could not parse PDF page size")
     width, height = map(float, match.groups())
-    if abs(width - args.width) > args.tolerance or abs(height - args.height) > args.tolerance:
+    if args.width is not None and (
+        abs(width - args.width) > args.tolerance
+        or abs(height - args.height) > args.tolerance
+    ):
         raise SystemExit(
             f"page size {width:g} x {height:g} pt; "
             f"expected {args.width:g} x {args.height:g} pt"

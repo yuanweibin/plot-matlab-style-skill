@@ -47,10 +47,10 @@ LINE_SCALE_METHODS = {
 }
 
 LINE_PAGE_PT = (368.0, 299.0)
-LINE_AXES_PT = (52.0, 47.5, 310.0, 231.0)
+LINE_AXES_PT = (52.0, 47.5, 310.0, 310.0 * 3.0 / 4.0)
 
 CONTOUR_PAGE_PT = (370.0, 308.0)
-CONTOUR_AXES_PT = (51.5, 49.5, 263.5, 231.0)
+CONTOUR_AXES_FRAME_PT = (51.5, 49.5, 263.5, 231.0)
 CONTOUR_CBAR_PT = (332.0, 49.5, 16.0, 231.0)
 
 PUBLICATION_RC = {
@@ -104,6 +104,45 @@ def _normalized_bounds(bounds_pt: Sequence[float], page_pt: Sequence[float]):
         bottom / page_height,
         width / page_width,
         height / page_height,
+    )
+
+
+def _box_ratio_value(box_ratio: float | Sequence[float]) -> float:
+    """Normalize a physical axes-box width:height ratio."""
+
+    if np.isscalar(box_ratio):
+        ratio = float(box_ratio)
+    else:
+        values = tuple(float(value) for value in box_ratio)
+        if len(values) != 2:
+            raise ValueError("box_ratio must be a number or (width, height)")
+        width, height = values
+        if width <= 0 or height <= 0:
+            raise ValueError("box_ratio width and height must be positive")
+        ratio = width / height
+    if not np.isfinite(ratio) or ratio <= 0:
+        raise ValueError("box_ratio must be positive and finite")
+    return ratio
+
+
+def _fit_box_ratio(
+    frame_pt: Sequence[float], box_ratio: float | Sequence[float]
+) -> tuple[float, float, float, float]:
+    """Fit an exact width:height axes box inside a calibrated frame."""
+
+    left, bottom, frame_width, frame_height = map(float, frame_pt)
+    ratio = _box_ratio_value(box_ratio)
+    if frame_width / frame_height > ratio:
+        height = frame_height
+        width = height * ratio
+    else:
+        width = frame_width
+        height = width / ratio
+    return (
+        left + (frame_width - width) / 2.0,
+        bottom + (frame_height - height) / 2.0,
+        width,
+        height,
     )
 
 
@@ -191,12 +230,45 @@ def _output_prefix(value: str | Path) -> Path:
     return prefix
 
 
+def _png_has_clear_border(path: Path, border_px: int = 2) -> bool:
+    """Return whether the outer PNG pixels are blank white canvas."""
+
+    image = plt.imread(path)
+    if (
+        image.ndim != 3
+        or image.shape[0] < 2 * border_px
+        or image.shape[1] < 2 * border_px
+    ):
+        return False
+    rgb = image[..., :3]
+    if image.shape[-1] == 4:
+        alpha = image[..., 3:4]
+        rgb = rgb * alpha + (1.0 - alpha)
+    border = np.concatenate(
+        (
+            rgb[:border_px].reshape(-1, 3),
+            rgb[-border_px:].reshape(-1, 3),
+            rgb[:, :border_px].reshape(-1, 3),
+            rgb[:, -border_px:].reshape(-1, 3),
+        ),
+        axis=0,
+    )
+    return bool(np.all(border >= 0.995))
+
+
 def _save(fig, output_prefix: str | Path, dpi: int) -> dict[str, Path]:
+    """Save both formats and fail closed if the fitted PNG still touches an edge."""
+
     prefix = _output_prefix(output_prefix)
     png = prefix.with_suffix(".png")
     pdf = prefix.with_suffix(".pdf")
     fig.savefig(png, dpi=dpi)
     fig.savefig(pdf)
+    if not _png_has_clear_border(png):
+        raise RuntimeError(
+            "page fitting left rendered content on the PNG boundary; "
+            "the output may be clipped"
+        )
     return {"png": png.resolve(), "pdf": pdf.resolve()}
 
 
@@ -613,7 +685,8 @@ def line_plot(
     labels to Matplotlib line properties, such as marker and linestyle.
     Set ``legend_loc=None`` to omit the legend. Automatic linear limits use
     4--6 uniform ticks; automatic log limits use clean 1--2--5 ticks. Explicit
-    limits or ticks always take precedence.
+    limits or ticks always take precedence. The physical axes box is always
+    exactly 4:3 (width:height); this is independent of data limits and scale.
 
     With ``legend_clearance`` (the default) an automatic y range is widened
     until the legend no longer sits on top of any curve. It has no effect when
@@ -743,6 +816,7 @@ def contour_plot(
     y: Sequence[float],
     z,
     *,
+    box_ratio: float | tuple[float, float],
     output_prefix: str | Path = "contour_plot",
     xlabel: str = r"$x/L$",
     ylabel: str = r"$y/L$",
@@ -760,7 +834,10 @@ def contour_plot(
 
     Accept ``z`` in either Matplotlib shape ``(len(y), len(x))`` or MATLAB
     ``ndgrid`` shape ``(len(x), len(y))``. Signed data defaults to symmetric
-    color limits around zero.
+    color limits around zero. ``box_ratio`` is required and denotes the
+    physical axes-box width:height ratio, either as a positive number or a
+    ``(width, height)`` pair. Callers should obtain it from the user rather
+    than infer it.
     """
 
     require_latex_tools()
@@ -797,11 +874,18 @@ def contour_plot(
     if colorbar_ticks is None:
         colorbar_ticks = np.linspace(vmin, vmax, 5)
 
+    axes_pt = _fit_box_ratio(CONTOUR_AXES_FRAME_PT, box_ratio)
+    cbar_pt = (
+        CONTOUR_CBAR_PT[0],
+        axes_pt[1],
+        CONTOUR_CBAR_PT[2],
+        axes_pt[3],
+    )
     page_width, page_height = CONTOUR_PAGE_PT
     with plt.rc_context(PUBLICATION_RC):
         fig = plt.figure(figsize=(page_width / 72, page_height / 72))
-        ax = fig.add_axes(_normalized_bounds(CONTOUR_AXES_PT, CONTOUR_PAGE_PT))
-        cax = fig.add_axes(_normalized_bounds(CONTOUR_CBAR_PT, CONTOUR_PAGE_PT))
+        ax = fig.add_axes(_normalized_bounds(axes_pt, CONTOUR_PAGE_PT))
+        cax = fig.add_axes(_normalized_bounds(cbar_pt, CONTOUR_PAGE_PT))
 
         filled = ax.contourf(
             x_array,
@@ -862,7 +946,7 @@ def contour_plot(
 
         _expand_page_to_fit(
             fig,
-            ((ax, CONTOUR_AXES_PT), (cax, CONTOUR_CBAR_PT)),
+            ((ax, axes_pt), (cax, cbar_pt)),
             CONTOUR_PAGE_PT,
             annotation_artist,
         )
@@ -895,6 +979,7 @@ def _run_demo(kind: str, output_dir: Path) -> None:
             x,
             y,
             z,
+            box_ratio=(263.5, 231.0),
             output_prefix=output_dir / "contour_demo",
             zlim=(-2, 2),
             xticks=np.linspace(0, 1, 6),
