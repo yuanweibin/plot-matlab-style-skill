@@ -44,7 +44,7 @@
 
 Contour 示例：
 
-> 用 Python 画一个带对称 colorbar 的等高线云图，采用 LaTeX 标签并输出 PDF。
+> 用 Python 画一个带对称 colorbar 的等高线云图，axes box 使用 4:3，采用 LaTeX 标签并输出 PDF。
 
 ## Python 环境
 
@@ -107,6 +107,8 @@ Windows 用户需要注意：
 - 校准后的 MATLAB 风格页面和坐标轴几何
 - 线图、semilog、loglog 和 filled contour
 - 自动生成 4--6 个规整、均匀间隔的线性坐标刻度
+- 线图 axes box 严格为 4:3；contour 由用户指定 axes box 比例
+- 根据全部 Matplotlib artist 自动扩展页面，并检查输出边界，避免标签被裁切
 - MATLAB 默认线条配色与 `RdBu_r` contour 配色
 - 外部 LaTeX 字体渲染
 - 300 dpi PNG 与矢量 PDF 输出

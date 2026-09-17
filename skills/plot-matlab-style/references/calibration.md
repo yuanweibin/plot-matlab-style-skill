@@ -18,7 +18,7 @@ Use these measurements when the user requests the established line/contour style
 ## Line figure
 
 - PDF page: 368 x 299 pt **nominal**; see "Page expansion" below
-- Axes rectangle: left 52, bottom 47.5, width 310, height 231 pt (the calibrated invariant)
+- Axes rectangle: left 52, bottom 47.5, width 310, height 232.5 pt. The exact 4:3 width:height box is the current invariant and supersedes the legacy measured height of 231 pt.
 - Legend: upper left, square frame, white background, 1 pt border
 - Figure annotation `(a)`: near the page upper-left corner
 - Calibrated reference content: `y=x`, `y=x^2`, both axes 0-1
@@ -33,6 +33,7 @@ Use these measurements when the user requests the established line/contour style
 - Colorbar outline/ticks: 0.5 pt; Times New Roman 14.4 pt tick labels
 - Colorbar title: LaTeX, 16 pt
 - Calibrated reference data: `Z = sin(2*pi*X) + cos(4*pi*Y)`
+- The 263.5 x 231 pt main-axes rectangle is the legacy maximum frame, not a default contour ratio. Ask the user for the desired axes-box width:height ratio, fit it exactly inside this frame, and align the colorbar vertically with the fitted axes.
 
 ## Page expansion
 
@@ -48,8 +49,13 @@ font size, so a single measurement suffices. A figure that already fits with 1 p
 untouched, which keeps both reference demos at exactly 368 x 299 and 370 x 308 pt.
 
 Consequence for checking: compare the *axes rectangle*, not the page, against this file. A page of
-374.5 x 299 pt with a 310 x 231 pt axes rectangle is correct; a page of exactly 368 x 299 pt with a
+374.5 x 299 pt with a 310 x 232.5 pt axes rectangle is correct; a page of exactly 368 x 299 pt with a
 shrunken axes rectangle is not.
+
+After saving, the exporter also checks the outer two PNG pixel rows and columns.
+If they are not blank white canvas, export fails instead of returning a possibly
+clipped figure. This deterministic artist-bound plus border validation replaces
+manual image segmentation; visual review is only a scientific/layout spot check.
 
 ## Legend clearance
 
