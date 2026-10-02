@@ -15,20 +15,16 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import matplotlib
-import numpy as np
 
-# These functions only ever write files, and an interactive backend silently
-# breaks the one thing this style guarantees.  A real window snaps the canvas to
-# whole pixels at the figure dpi, so macosx turns a requested 368 x 299 pt page
-# into 367.92 x 298.8 -- off-spec before a single curve is drawn.  Agg keeps the
-# requested size exactly, through set_size_inches and through both savefig calls.
+# File-only plotting keeps exact physical geometry with the Agg backend.
 matplotlib.use("Agg")
-
-import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.ticker import NullFormatter, StrMethodFormatter  # noqa: E402
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.ticker import NullFormatter, StrMethodFormatter
 
 
 MATLAB_DARK_GRAY = "#262626"
+PANEL_LABEL_FONT_PT = 16.5
 MATLAB_LINE_COLORS = (
     "#0072BD",
     "#D95319",
@@ -47,6 +43,8 @@ LINE_SCALE_METHODS = {
 }
 
 LINE_PAGE_PT = (368.0, 299.0)
+# The line-plot axes box is a strict 4:3 (width:height).  Keep the calibrated
+# width and let the height follow from the invariant.
 LINE_AXES_PT = (52.0, 47.5, 310.0, 310.0 * 3.0 / 4.0)
 
 CONTOUR_PAGE_PT = (370.0, 308.0)
@@ -107,8 +105,198 @@ def _normalized_bounds(bounds_pt: Sequence[float], page_pt: Sequence[float]):
     )
 
 
+def _panel_label_anchor(ax, *, colorbar_title=None) -> tuple[float, float]:
+    """Measure the ylabel left edge and axes/title top in display coordinates."""
+
+    fig = ax.figure
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    ylabel_box = ax.yaxis.label.get_window_extent(renderer)
+    if colorbar_title is None:
+        top = ax.get_window_extent(renderer).y1
+    else:
+        if colorbar_title.figure is not fig:
+            raise ValueError("colorbar_title and ax must belong to the same figure")
+        top = colorbar_title.get_window_extent(renderer).y1
+    return float(ylabel_box.x0), float(top)
+
+
+def _panel_label_text(fig, position, annotation):
+    """Create an unclipped, crop-aware label with the publication LaTeX font."""
+
+    return fig.text(
+        *position,
+        annotation,
+        transform=fig.transFigure,
+        ha="center",
+        va="center",
+        fontsize=PANEL_LABEL_FONT_PT,
+        fontfamily=PUBLICATION_RC["font.family"],
+        usetex=PUBLICATION_RC["text.usetex"],
+        color="black",
+        clip_on=False,
+        in_layout=True,
+    )
+
+
+def add_panel_label(fig, ax, annotation: str | None = "(a)", *, colorbar_title=None):
+    """Add a renderer-positioned panel label and return its Text artist.
+
+    For lines, its center is at the ylabel bbox's left edge and the axes
+    bbox's top. For contours, pass the Text returned by the colorbar axes'
+    ``set_title``: its bbox's TOP is the vertical reference, not the ylabel
+    or colorbar ticks. ``None`` omits the label. Call after setting all ticks,
+    labels and layout, before export. In a native multi-panel figure, pass
+    the FIRST panel's axes and the UPPER ROW colorbar title; the figure's
+    display coordinates already include both panels' layout offsets.
+    """
+
+    if annotation is None:
+        return None
+    if ax.figure is not fig:
+        raise ValueError("ax must belong to fig")
+    anchor = _panel_label_anchor(ax, colorbar_title=colorbar_title)
+    position = fig.transFigure.inverted().transform(anchor)
+    return _panel_label_text(fig, position, annotation)
+
+
+def save_labeled_composite(
+    canvas,
+    output_prefix: str | Path,
+    *,
+    reference_ax,
+    colorbar_title,
+    first_axes_top_left: tuple[float, float],
+    title_reference_ax=None,
+    title_axes_top_left: tuple[float, float] | None = None,
+    annotation: str | None = "(a)",
+    dpi: int = 300,
+    auto_crop: bool = True,
+    padding_pt: float = 6.0,
+) -> dict[str, Path]:
+    """Export a stitched contour image with a measured LaTeX panel label.
+
+    ``canvas`` is a PIL image or RGB(A) array, assembled at ``dpi``.
+    ``reference_ax`` must reproduce the FIRST panel's actual ylabel, ticks
+    and geometry. ``colorbar_title`` is the UPPER ROW colorbar's title Text.
+    If that title belongs to a different panel, also pass its main axes as
+    ``title_reference_ax`` and their ``title_axes_top_left`` in the canvas.
+    Both top-left coordinates refer to axes boxes (not image corners), in
+    canvas pixels measured from the top-left. Renderer-derived offsets are
+    scaled from each reference figure's DPI to the canvas DPI; no guessed
+    text offsets are used. Keep reference figures open until this returns.
+    PNG/PDF use the same crop and padding policy as standalone plots.
+    """
+
+    require_latex_tools()
+    pixels = np.asarray(canvas)
+    height, width = pixels.shape[:2]
+    with plt.rc_context(PUBLICATION_RC):
+        fig = plt.figure(figsize=(width / dpi, height / dpi), dpi=dpi)
+        image_ax = fig.add_axes((0, 0, 1, 1))
+        image_ax.imshow(pixels, interpolation="none", aspect="auto")
+        image_ax.set_axis_off()
+        if annotation is not None:
+            title_ax = reference_ax if title_reference_ax is None else title_reference_ax
+            if title_axes_top_left is None:
+                if title_ax is not reference_ax:
+                    raise ValueError("title_axes_top_left is required for a different title panel")
+                title_axes_top_left = first_axes_top_left
+            ylabel_left, _ = _panel_label_anchor(reference_ax)
+            _, title_top = _panel_label_anchor(title_ax, colorbar_title=colorbar_title)
+            first_box = reference_ax.get_window_extent(reference_ax.figure.canvas.get_renderer())
+            title_box = title_ax.get_window_extent(title_ax.figure.canvas.get_renderer())
+            center_x = first_axes_top_left[0] + (
+                ylabel_left - first_box.x0
+            ) * dpi / reference_ax.figure.dpi
+            center_y = title_axes_top_left[1] + (
+                title_box.y1 - title_top
+            ) * dpi / title_ax.figure.dpi
+            fig.canvas.draw()
+            # Canvas coordinates run down from the top; display coordinates
+            # run up from the bottom. Apply offsets before figure conversion.
+            position = fig.transFigure.inverted().transform((center_x, height - center_y))
+            _panel_label_text(fig, position, annotation)
+        try:
+            return _save(fig, output_prefix, dpi, auto_crop=auto_crop, padding_pt=padding_pt)
+        finally:
+            plt.close(fig)
+
+
+def _output_prefix(value: str | Path) -> Path:
+    prefix = Path(value).expanduser()
+    if prefix.suffix.lower() in {".png", ".pdf"}:
+        prefix = prefix.with_suffix("")
+    prefix.parent.mkdir(parents=True, exist_ok=True)
+    return prefix
+
+
+def _png_has_clear_border(path: Path, border_px: int = 2) -> bool:
+    """Return whether the outer PNG pixels are blank white canvas."""
+
+    image = plt.imread(path)
+    if image.ndim != 3 or image.shape[0] < 2 * border_px or image.shape[1] < 2 * border_px:
+        return False
+    rgb = image[..., :3]
+    if image.shape[-1] == 4:
+        alpha = image[..., 3:4]
+        rgb = rgb * alpha + (1.0 - alpha)
+    border = np.concatenate(
+        (
+            rgb[:border_px].reshape(-1, 3),
+            rgb[-border_px:].reshape(-1, 3),
+            rgb[:, :border_px].reshape(-1, 3),
+            rgb[:, -border_px:].reshape(-1, 3),
+        ),
+        axis=0,
+    )
+    return bool(np.all(border >= 0.995))
+
+
+def _save(
+    fig,
+    output_prefix: str | Path,
+    dpi: int,
+    *,
+    auto_crop: bool = True,
+    padding_pt: float = 6.0,
+) -> dict[str, Path]:
+    """Save PNG/PDF without clipping text or other visible artists.
+
+    The default uses Matplotlib's artist-aware tight bounding box, adds a
+    safety margin, and checks the PNG border.  If rasterized content reaches
+    the edge, the margin grows automatically and both formats are rewritten.
+    Set ``auto_crop=False`` only when an exact fixed page is required for
+    reference matching.
+    """
+
+    if padding_pt < 0:
+        raise ValueError("padding_pt must be non-negative")
+    prefix = _output_prefix(output_prefix)
+    png = prefix.with_suffix(".png")
+    pdf = prefix.with_suffix(".pdf")
+    if not auto_crop:
+        fig.savefig(png, dpi=dpi)
+        fig.savefig(pdf)
+        return {"png": png.resolve(), "pdf": pdf.resolve()}
+
+    padding_inches = padding_pt / 72.0
+    for _ in range(3):
+        save_kwargs = {"bbox_inches": "tight", "pad_inches": padding_inches}
+        fig.savefig(png, dpi=dpi, **save_kwargs)
+        fig.savefig(pdf, **save_kwargs)
+        if _png_has_clear_border(png):
+            return {"png": png.resolve(), "pdf": pdf.resolve()}
+        padding_inches = max(padding_inches * 2.0, 1.0 / dpi)
+
+    raise RuntimeError(
+        "automatic export could not create a clear outer border; "
+        "inspect artists with custom transforms or clipping disabled"
+    )
+
+
 def _box_ratio_value(box_ratio: float | Sequence[float]) -> float:
-    """Normalize a physical axes-box width:height ratio."""
+    """Normalize a requested axes-box width:height ratio."""
 
     if np.isscalar(box_ratio):
         ratio = float(box_ratio)
@@ -144,132 +332,6 @@ def _fit_box_ratio(
         width,
         height,
     )
-
-
-_FIT_SLACK_PT = 1.0
-"""Minimum clearance demanded between the outermost ink and the page edge.
-
-Without it a label whose extent lands exactly on the boundary is antialiased
-against nothing and reads as shaved.
-"""
-
-
-def _renderer(fig):
-    fig.canvas.draw()
-    try:
-        return fig.canvas.get_renderer()
-    except AttributeError:
-        from matplotlib.backends.backend_agg import FigureCanvasAgg
-
-        return FigureCanvasAgg(fig).get_renderer()
-
-
-def _expand_page_to_fit(fig, boxes_pt, page_pt, annotation_artist=None):
-    """Grow the page until nothing is clipped, keeping the axes rectangles fixed.
-
-    What this style calibrates is the axes rectangle and the typography, not the
-    page: the reference page leaves only 368 - (52 + 310) = 6 pt to the right of
-    the axes and 52 pt to its left.  That is enough for the calibration content,
-    whose tick labels are as short as "1" and "0.5".  Real data is not so
-    convenient -- "0.15" on the y axis needs about 26 pt plus the tick pad and
-    the rotated y-label, and a final x tick of "25" overhangs its centre by more
-    than 6 pt -- so the y-label and the last x tick label were being cut off.
-
-    Shrinking the axes to make room would silently break the calibrated
-    geometry, so instead the page grows by exactly the overflow and each axes
-    rectangle keeps its size in points, shifted to stay in the same place
-    relative to the data.  Everything is a pure translation at fixed font size,
-    so one measurement suffices; no iteration is needed.
-
-    A figure that already fits with ``_FIT_SLACK_PT`` to spare is left alone,
-    which keeps the reference demos byte-comparable.
-
-    Returns the page size in points actually used.
-    """
-    page_width, page_height = page_pt
-
-    # Restate the calibrated size before measuring against it, so the helper is
-    # correct whatever size the figure was actually created at.  The module
-    # forces Agg for this reason too; under an interactive backend a new canvas
-    # is snapped to whole pixels and the page silently drifts off-spec.
-    fig.set_size_inches(page_width / 72.0, page_height / 72.0)
-
-    bbox = fig.get_tightbbox(_renderer(fig))
-    if bbox is None:
-        return page_pt
-
-    left = max(0.0, _FIT_SLACK_PT - bbox.x0 * 72.0)
-    bottom = max(0.0, _FIT_SLACK_PT - bbox.y0 * 72.0)
-    right = max(0.0, bbox.x1 * 72.0 - (page_width - _FIT_SLACK_PT))
-    top = max(0.0, bbox.y1 * 72.0 - (page_height - _FIT_SLACK_PT))
-    if max(left, bottom, right, top) <= 0.0:
-        return page_pt
-
-    new_width = page_width + left + right
-    new_height = page_height + bottom + top
-    fig.set_size_inches(new_width / 72.0, new_height / 72.0)
-    for axes, bounds in boxes_pt:
-        box_left, box_bottom, box_width, box_height = bounds
-        axes.set_position(
-            _normalized_bounds(
-                (box_left + left, box_bottom + bottom, box_width, box_height),
-                (new_width, new_height),
-            )
-        )
-    if annotation_artist is not None:
-        # The annotation marks the page corner, so it follows the new corner.
-        annotation_artist.set_position((1 / new_width, 1 - 2.75 / new_height))
-    return (new_width, new_height)
-
-
-def _output_prefix(value: str | Path) -> Path:
-    prefix = Path(value).expanduser()
-    if prefix.suffix.lower() in {".png", ".pdf"}:
-        prefix = prefix.with_suffix("")
-    prefix.parent.mkdir(parents=True, exist_ok=True)
-    return prefix
-
-
-def _png_has_clear_border(path: Path, border_px: int = 2) -> bool:
-    """Return whether the outer PNG pixels are blank white canvas."""
-
-    image = plt.imread(path)
-    if (
-        image.ndim != 3
-        or image.shape[0] < 2 * border_px
-        or image.shape[1] < 2 * border_px
-    ):
-        return False
-    rgb = image[..., :3]
-    if image.shape[-1] == 4:
-        alpha = image[..., 3:4]
-        rgb = rgb * alpha + (1.0 - alpha)
-    border = np.concatenate(
-        (
-            rgb[:border_px].reshape(-1, 3),
-            rgb[-border_px:].reshape(-1, 3),
-            rgb[:, :border_px].reshape(-1, 3),
-            rgb[:, -border_px:].reshape(-1, 3),
-        ),
-        axis=0,
-    )
-    return bool(np.all(border >= 0.995))
-
-
-def _save(fig, output_prefix: str | Path, dpi: int) -> dict[str, Path]:
-    """Save both formats and fail closed if the fitted PNG still touches an edge."""
-
-    prefix = _output_prefix(output_prefix)
-    png = prefix.with_suffix(".png")
-    pdf = prefix.with_suffix(".pdf")
-    fig.savefig(png, dpi=dpi)
-    fig.savefig(pdf)
-    if not _png_has_clear_border(png):
-        raise RuntimeError(
-            "page fitting left rendered content on the PNG boundary; "
-            "the output may be clipped"
-        )
-    return {"png": png.resolve(), "pdf": pdf.resolve()}
 
 
 def _nice_number_ceiling(value: float) -> float:
@@ -518,6 +580,16 @@ def _scaled_axis(
     return _axis_scale(values, limits, ticks)
 
 
+def _renderer(fig):
+    fig.canvas.draw()
+    try:
+        return fig.canvas.get_renderer()
+    except AttributeError:
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+        return FigureCanvasAgg(fig).get_renderer()
+
+
 _LEGEND_CLEARANCE_PT = 2.0
 """Clearance demanded between the legend frame and the nearest plotted point."""
 
@@ -675,6 +747,8 @@ def line_plot(
     legend_clearance: bool = True,
     annotation: str | None = "(a)",
     dpi: int = 300,
+    auto_crop: bool = True,
+    padding_pt: float = 6.0,
 ) -> dict[str, Path]:
     """Save a calibrated line figure.
 
@@ -686,12 +760,12 @@ def line_plot(
     Set ``legend_loc=None`` to omit the legend. Automatic linear limits use
     4--6 uniform ticks; automatic log limits use clean 1--2--5 ticks. Explicit
     limits or ticks always take precedence. The physical axes box is always
-    exactly 4:3 (width:height); this is independent of data limits and scale.
-
-    With ``legend_clearance`` (the default) an automatic y range is widened
-    until the legend no longer sits on top of any curve. It has no effect when
-    ``ylim`` or ``yticks`` is given, since those are honoured exactly; such a
-    collision is reported as a warning instead.
+    exactly 4:3 (width:height). ``auto_crop=True`` uses artist-aware export
+    bounds plus ``padding_pt`` of safety margin so labels are not clipped.
+    ``legend_clearance=True`` preserves automatic y-range expansion to avoid
+    covering curves; explicit limits/ticks remain fixed and collisions warn.
+    ``annotation`` uses a 16.5 pt LaTeX serif label centered on the ylabel's
+    left bbox edge and axes' top bbox edge; ``None`` omits it.
     """
 
     require_latex_tools()
@@ -732,7 +806,7 @@ def line_plot(
     )
 
     with plt.rc_context(PUBLICATION_RC):
-        fig = plt.figure(figsize=(page_width / 72, page_height / 72))
+        fig = plt.figure(figsize=(page_width / 72, page_height / 72), dpi=dpi)
         ax = fig.add_axes(_normalized_bounds(LINE_AXES_PT, LINE_PAGE_PT))
 
         plotter = getattr(ax, plot_method)
@@ -762,7 +836,6 @@ def line_plot(
         ax.set_xlabel(xlabel, labelpad=5)
         ax.set_ylabel(ylabel, labelpad=5)
 
-        legend = None
         if legend_loc is not None:
             legend = ax.legend(
                 loc=legend_loc,
@@ -778,35 +851,21 @@ def line_plot(
                 handletextpad=0.285,
             )
             legend.get_frame().set_linewidth(1)
-
             if legend_clearance:
                 y_bounds, resolved_yticks = _clear_legend(
-                    ax,
-                    legend,
-                    all_y,
-                    y_bounds,
-                    resolved_yticks,
-                    legend_loc,
-                    y_axis_scale,
-                    expandable=ylim is None and yticks is None,
+                    ax, legend, all_y, y_bounds, resolved_yticks, legend_loc,
+                    y_axis_scale, expandable=ylim is None and yticks is None,
                 )
 
-        annotation_artist = None
-        if annotation:
-            annotation_artist = fig.text(
-                1 / page_width,
-                1 - 2.75 / page_height,
-                annotation,
-                va="top",
-                ha="left",
-                color="black",
-                fontsize=16.5,
-            )
+        add_panel_label(fig, ax, annotation)
 
-        _expand_page_to_fit(
-            fig, ((ax, LINE_AXES_PT),), LINE_PAGE_PT, annotation_artist
+        outputs = _save(
+            fig,
+            output_prefix,
+            dpi,
+            auto_crop=auto_crop,
+            padding_pt=padding_pt,
         )
-        outputs = _save(fig, output_prefix, dpi)
         plt.close(fig)
     return outputs
 
@@ -829,6 +888,9 @@ def contour_plot(
     colorbar_ticks: Sequence[float] | None = None,
     annotation: str | None = "(a)",
     dpi: int = 300,
+    auto_crop: bool = True,
+    padding_pt: float = 6.0,
+    show_colorbar: bool = True,
 ) -> dict[str, Path]:
     """Save a calibrated filled-contour figure.
 
@@ -837,7 +899,13 @@ def contour_plot(
     color limits around zero. ``box_ratio`` is required and denotes the
     physical axes-box width:height ratio, either as a positive number or a
     ``(width, height)`` pair. Callers should obtain it from the user rather
-    than infer it.
+    than infer it. ``auto_crop=True`` prevents text clipping during export.
+    Set ``show_colorbar=False`` when assembling panels that share a colorbar.
+    ``annotation`` is a 16.5 pt LaTeX serif label centered on the ylabel's
+    left bbox edge and colorbar TOP TITLE's top bbox edge. With no colorbar,
+    use the axes' top edge; for shared-colorbar composites omit per-panel
+    annotations and call ``add_panel_label`` or ``save_labeled_composite``.
+    ``annotation=None`` omits the label.
     """
 
     require_latex_tools()
@@ -883,9 +951,13 @@ def contour_plot(
     )
     page_width, page_height = CONTOUR_PAGE_PT
     with plt.rc_context(PUBLICATION_RC):
-        fig = plt.figure(figsize=(page_width / 72, page_height / 72))
+        fig = plt.figure(figsize=(page_width / 72, page_height / 72), dpi=dpi)
         ax = fig.add_axes(_normalized_bounds(axes_pt, CONTOUR_PAGE_PT))
-        cax = fig.add_axes(_normalized_bounds(cbar_pt, CONTOUR_PAGE_PT))
+        cax = (
+            fig.add_axes(_normalized_bounds(cbar_pt, CONTOUR_PAGE_PT))
+            if show_colorbar
+            else None
+        )
 
         filled = ax.contourf(
             x_array,
@@ -914,43 +986,35 @@ def contour_plot(
         ax.set_xlabel(xlabel, labelpad=4, fontsize=17.6)
         ax.set_ylabel(ylabel, labelpad=2.5, fontsize=17.6)
 
-        colorbar = fig.colorbar(filled, cax=cax, ticks=colorbar_ticks)
-        colorbar.outline.set_linewidth(0.5)
-        colorbar.ax.yaxis.set_ticks_position("right")
-        colorbar.ax.tick_params(
-            direction="in",
-            length=2.31,
-            width=0.5,
-            pad=4.8,
-            labelsize=14.4,
-        )
-        tick_text = [f"{float(value):g}" for value in colorbar_ticks]
-        colorbar.set_ticklabels(tick_text)
-        for tick_label in colorbar.ax.get_yticklabels():
-            tick_label.set_usetex(False)
-            tick_label.set_fontfamily("Times New Roman")
-            tick_label.set_fontsize(14.4)
-        colorbar.ax.set_title(colorbar_title, fontsize=16, pad=10.5)
-
-        annotation_artist = None
-        if annotation:
-            annotation_artist = fig.text(
-                7.25 / page_width,
-                1 - 6.25 / page_height,
-                annotation,
-                va="top",
-                ha="left",
-                color="black",
-                fontsize=16.5,
+        title_text = None
+        if show_colorbar:
+            colorbar = fig.colorbar(filled, cax=cax, ticks=colorbar_ticks)
+            colorbar.outline.set_linewidth(0.5)
+            colorbar.ax.yaxis.set_ticks_position("right")
+            colorbar.ax.tick_params(
+                direction="in",
+                length=2.31,
+                width=0.5,
+                pad=4.8,
+                labelsize=14.4,
             )
+            tick_text = [f"{float(value):g}" for value in colorbar_ticks]
+            colorbar.set_ticklabels(tick_text)
+            for tick_label in colorbar.ax.get_yticklabels():
+                tick_label.set_usetex(False)
+                tick_label.set_fontfamily("Times New Roman")
+                tick_label.set_fontsize(14.4)
+            title_text = colorbar.ax.set_title(colorbar_title, fontsize=16, pad=10.5)
 
-        _expand_page_to_fit(
+        add_panel_label(fig, ax, annotation, colorbar_title=title_text)
+
+        outputs = _save(
             fig,
-            ((ax, axes_pt), (cax, cbar_pt)),
-            CONTOUR_PAGE_PT,
-            annotation_artist,
+            output_prefix,
+            dpi,
+            auto_crop=auto_crop,
+            padding_pt=padding_pt,
         )
-        outputs = _save(fig, output_prefix, dpi)
         plt.close(fig)
     return outputs
 

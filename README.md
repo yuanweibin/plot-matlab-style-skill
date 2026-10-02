@@ -108,7 +108,10 @@ Windows 用户需要注意：
 - 线图、semilog、loglog 和 filled contour
 - 自动生成 4--6 个规整、均匀间隔的线性坐标刻度
 - 线图 axes box 严格为 4:3；contour 由用户指定 axes box 比例
-- 根据全部 Matplotlib artist 自动扩展页面，并检查输出边界，避免标签被裁切
+- 根据全部 Matplotlib artist 自动裁切，保留至少 6 pt 空白边距并检查输出边界，避免标签被裁切
+- 子图标号使用 16.5 pt LaTeX 衬线字体，draw 后按实际文字与坐标轴包围框自动定位
+- Contour 标号对齐 colorbar 顶部标题，支持原生多面板和不同 DPI 的拼合图偏移
+- 保留图例避让、严格 axes box 比例和 Agg 文件导出后端
 - MATLAB 默认线条配色与 `RdBu_r` contour 配色
 - 外部 LaTeX 字体渲染
 - 300 dpi PNG 与矢量 PDF 输出

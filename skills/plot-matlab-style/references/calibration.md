@@ -5,6 +5,7 @@ Use these measurements when the user requests the established line/contour style
 ## Shared typography and strokes
 
 - External LaTeX: `text.usetex=True`
+- Panel labels: existing LaTeX serif font, 16.5 pt, centered horizontally and vertically; position from renderer bounding boxes after draw, never fixed page/pixel coordinates.
 - Main/tick font size: 16 pt
 - Axis-label size: approximately 1.1 times the tick size (17.6-18 pt)
 - Legend size: approximately 0.9 times the tick size (14.4 pt)
@@ -17,10 +18,10 @@ Use these measurements when the user requests the established line/contour style
 
 ## Line figure
 
-- PDF page: 368 x 299 pt **nominal**; see "Page expansion" below
-- Axes rectangle: left 52, bottom 47.5, width 310, height 232.5 pt. The exact 4:3 width:height box is the current invariant and supersedes the legacy measured height of 231 pt.
+- PDF page: 368 x 299 pt
+- Axes rectangle: left 52, bottom 47.5, width 310, height 232.5 pt. The current line-style invariant is an exact 4:3 width:height axes box; it supersedes the legacy measured height of 231 pt.
 - Legend: upper left, square frame, white background, 1 pt border
-- Figure annotation `(a)`: near the page upper-left corner
+- Figure annotation `(a)`: horizontal center at the ylabel bbox's left edge; vertical center at the axes bbox's top edge.
 - Calibrated reference content: `y=x`, `y=x^2`, both axes 0-1
 
 ## Filled-contour figure
@@ -32,30 +33,15 @@ Use these measurements when the user requests the established line/contour style
 - Default signed-data map: `RdBu_r`, 200 levels, symmetric limits
 - Colorbar outline/ticks: 0.5 pt; Times New Roman 14.4 pt tick labels
 - Colorbar title: LaTeX, 16 pt
+- Figure annotation: horizontal center at the ylabel bbox's left edge; vertical center at the colorbar top-title bbox's **top edge**, not the ylabel or colorbar ticks. For multi-panel composites, use the first panel's ylabel and upper row colorbar title, including their placement offsets (and reference-to-output DPI conversion for raster stitching).
 - Calibrated reference data: `Z = sin(2*pi*X) + cos(4*pi*Y)`
-- The 263.5 x 231 pt main-axes rectangle is the legacy maximum frame, not a default contour ratio. Ask the user for the desired axes-box width:height ratio, fit it exactly inside this frame, and align the colorbar vertically with the fitted axes.
+- The 263.5 x 231 pt rectangle is the legacy maximum frame, not a default box ratio. Ask the user for the desired contour axes-box width:height ratio, then fit that exact ratio inside this frame and align the colorbar vertically with the fitted axes.
 
-## Page expansion
+## Safe export and fixed-page matching
 
-The nominal page leaves 368 - (52 + 310) = 6 pt to the right of the axes and 52 pt to its left.
-That fits the calibration content, whose tick labels are as short as `1` and `0.5`, but not real
-data: `0.15` on the y axis needs roughly 26 pt plus the 6 pt tick pad plus the rotated y-label, and
-a final x tick of `25` overhangs its centre by more than 6 pt. Both used to be silently cut off.
-
-`_expand_page_to_fit` therefore measures the drawn figure and, when any artist would fall outside
-the page, grows the page by exactly the overflow while each axes rectangle keeps its size in points
-and shifts to stay in the same place relative to the data. Everything is a pure translation at fixed
-font size, so a single measurement suffices. A figure that already fits with 1 pt to spare is left
-untouched, which keeps both reference demos at exactly 368 x 299 and 370 x 308 pt.
-
-Consequence for checking: compare the *axes rectangle*, not the page, against this file. A page of
-374.5 x 299 pt with a 310 x 232.5 pt axes rectangle is correct; a page of exactly 368 x 299 pt with a
-shrunken axes rectangle is not.
-
-After saving, the exporter also checks the outer two PNG pixel rows and columns.
-If they are not blank white canvas, export fails instead of returning a possibly
-clipped figure. This deterministic artist-bound plus border validation replaces
-manual image segmentation; visual review is only a scientific/layout spot check.
+- Normal exports use the complete Matplotlib artist bounding box plus at least 6 pt of padding. This may change the final PNG/PDF canvas dimensions while leaving the physical axes-box ratio unchanged.
+- The exporter checks the outer PNG pixels and automatically retries with more padding when rendered content reaches the edge. This is the primary clipping safeguard; manual crop inspection is only a spot check.
+- For exact reference-page matching, disable automatic cropping and retain the calibrated fixed page. In that mode, programmatically or visually verify that all text stays inside the page because the automatic canvas expansion is intentionally unavailable.
 
 ## Legend clearance
 
